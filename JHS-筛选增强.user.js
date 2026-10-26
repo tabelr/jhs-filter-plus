@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         JHS 筛选增强
 // @namespace    local.jhs.filter.plus
-// @version      3.6.2
+// @version      3.7.0
 // @description  为 JHS 列表页叠加自定义筛选；「资料库」视图合并 JHS 与本地影子库，支持从详情页按需补齐导演/片商/系列/类别等字段，内置诊断工具。
 // @author       tabelr
 // @match        *://javdb.com/*
@@ -41,6 +41,12 @@
  *    番号旁显示未补齐原因角标；搜不到攒满 3 次后不再进补齐队列，但仍可在此筛选里找到。
  * 3.6.2 修复：改番号 / 单条补齐 / 删除后不再跳回默认排序（reloadRows 会恢复当前排序，
  *    页码超限时自动收回）；资料库标题栏显示版本号，方便确认装的是不是最新版。
+ * 3.6.3 图墙：卡片下方新增类别标签显示（最多 6 个，超出显示 +N），与资料库类别列同源
+ *    （影子库 tags，未补齐的记录不显示）。
+ * 3.6.4 图墙：卡片类别标签全部显示，不再只显示前 6 个（资料库表格仍保持前 6 个 +N）。
+ * 3.7.0 图墙：新增「标签」筛选维度（在系列和番号之间）：展开后显示出现最多的标签
+ *    chip（带数量）可直接点，也能自由输入（多个用逗号分隔）；卡片上的标签片可点，
+ *    点后直接按该标签筛选；已选条件条、计数角标、预设均跟随；底部诊断计数已去掉。
  */
 
 (function () {
@@ -74,7 +80,7 @@
   const LIB_BACKUP_VERSION = 1;
   const DB_LOOKUP_VERSION = 2;           // 旧版 DB 未命中记录只复核一次
   const META_PARSE_VERSION = 2;           // 修复解析后，旧的不完整记录最多复核一次
-  const XM_VERSION = '3.6.2';            // 界面里显示的版本号（与 @version 保持一致）
+  const XM_VERSION = '3.7.0';            // 界面里显示的版本号（与 @version 保持一致）
 
   const WRITABLE = ['url', 'names', 'publishTime', 'remark'];
   const STATUS_KEYS = ['favorite', 'downloaded', 'watched', 'blocked'];
@@ -113,7 +119,7 @@
 
   const DEFAULT_COND = {
     state: '', minScore: '', minVotes: '', minYear: '', sort: 'default',
-    actor: '', director: '', series: '',
+    actor: '', director: '', series: '', tag: '',
     prefix: '', exPrefix: '', kw: '', exKw: ''
   };
 
@@ -125,7 +131,7 @@
   }
 
   // 需要影子库才能判定的字段
-  const META_FIELDS = ['actor', 'director', 'series'];
+  const META_FIELDS = ['actor', 'director', 'series', 'tag'];
 
   function yearChips() {
     const y = new Date().getFullYear();
@@ -271,6 +277,9 @@
   .xm-wall-list .item:hover .video-title { color:var(--xm-accent); }
   .xm-wall-names { display:block; margin-top:4px; font-size:12.5px; line-height:1.45;
       color:var(--xm-amber); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .xm-wall-tags { display:flex; flex-wrap:wrap; gap:2px; margin-top:5px; }
+  .xm-wall-tags .xm-tag { cursor:pointer; }
+  .xm-wall-tags-label { flex:0 0 auto; align-self:center; font-size:11px; color:var(--xm-text); font-weight:600; margin-right:2px; }
   .xm-cover-bad::after { content:'图片加载失败'; position:absolute; left:0; right:0;
       top:50%; transform:translateY(-50%); text-align:center; font-size:11px;
       color:var(--xm-faint); }
@@ -391,8 +400,8 @@
   .xm-wf--error { color:var(--xm-danger); }
   .xm-card-line { display:block; margin-top:2px; font-size:11px; line-height:1.4;
       color:var(--xm-amber); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .xm-tag { display:inline-block; padding:0 6px; margin:1px 3px 1px 0; border-radius:8px;
-      background:var(--xm-bg-hover); color:var(--xm-muted); font-size:11px; white-space:nowrap; }
+  .xm-tag { display:inline-block; padding:1px 7px; margin:1px 3px 1px 0; border-radius:8px;
+      border:1px solid var(--xm-border); background:var(--xm-accent-bg); color:var(--xm-accent-dark); font-size:11px; white-space:nowrap; }
   .xm-c-dim { color:var(--xm-faint); font-size:12px; }
 
   /* ---- 本次新增：已选条件条 / 预设 / 折叠 / 密度 / 骨架屏 / 悬停信息 / 列隐藏 / 列选择器 / 焦点 / 暗色 ---- */
@@ -885,11 +894,12 @@
       if (exKw.length && exKw.some(k => title.indexOf(k) !== -1)) return false;
     }
 
-    // 演员 / 导演 / 系列：缺数据时跳过（无法判断，不计入结果）
+    // 演员 / 导演 / 系列 / 标签：缺数据时跳过（无法判断，不计入结果）
     const wantMeta = META_FIELDS.filter(f => String(cond[f] || '').trim());
     for (const f of wantMeta) {
       const words = splitByComma(cond[f]);
-      const hay = String(f === 'actor' ? (r.names || '') : (r[f] || '')).toUpperCase();
+      const hay = String(f === 'actor' ? (r.names || '') :
+        (f === 'tag' ? (Array.isArray(r.tags) ? r.tags.join(' ') : '') : (r[f] || ''))).toUpperCase();
       if (!hay) { noData++; return false; }
       if (!words.some(w => hay.indexOf(w) !== -1)) return false;
     }
@@ -981,6 +991,13 @@
     updateSummary();
   }
 
+  // 图墙卡片的类别标签：全部显示，不截断（资料库表格仍只显示前 6 个 +N）
+  function wallTagsHtml(arr) {
+    return arr.map(function (t) {
+      return '<span class="xm-tag">' + esc(t) + '</span>';
+    }).join('');
+  }
+
   function wallCardHtml(r) {
     const title = r.title || '';
     const href = r.url || ('https://javdb.com/search?q=' + encodeURIComponent(r.lookupCarNum || r.carNum) + '&f=all');
@@ -1014,6 +1031,7 @@
         '<div class="meta">' + esc(r.publishTime || '') + '</div>' +
         score +
         (r.names ? '<div class="xm-wall-names">' + esc(r.names) + '</div>' : '') +
+        (r.tags && r.tags.length ? '<div class="xm-wall-tags"><span class="xm-wall-tags-label">类别：</span>' + wallTagsHtml(r.tags) + '</div>' : '') +
       '</a>' + stageTags +
     '</div>';
   }
@@ -1029,6 +1047,7 @@
       box.textContent = total ? '没有匹配的影片' : '读取中…';
       return;
     }
+    // 诊断计数已去掉，恢复只显示总数
     box.textContent = '共 ' + WALL.rows.length + ' 条';
   }
 
@@ -1241,6 +1260,7 @@
     modal.innerHTML =
       '<div class="xm-hd">' +
         '<span class="xm-hd-title">图墙</span>' +
+        '<span class="xm-hd-count">v' + XM_VERSION + '</span>' +
         '<span class="xm-hd-count" id="xm-wall-info"></span>' +
         '<span class="xm-wall-tip">按 ESC 或点空白处也能关</span>' +
         '<button class="xm-wall-density" id="xm-wall-density" type="button">紧凑</button>' +
@@ -1315,6 +1335,21 @@
 
     // 与 JHS 原生卡片相同，打开完整影片详情页。
     const openWallMovie = function (ev) {
+      // 点卡片上的标签片：按该标签筛选，不打开详情页
+      const tagEl = ev.target.closest ? ev.target.closest('.xm-wall-tags .xm-tag') : null;
+      if (tagEl) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (ev.type !== 'click' || ev.button !== 0) return;
+        const t = (tagEl.textContent || '').trim();
+        if (t) {
+          cond.tag = t;
+          saveCond();
+          paintPanel();
+          apply();
+        }
+        return;
+      }
       const stageBtn = ev.target.closest ? ev.target.closest('.xm-stage-btn') : null;
       if (stageBtn) {
         ev.preventDefault();
@@ -1425,7 +1460,7 @@
 
   function activeCount() {
     let n = 0;
-    const keys = ['state', 'actor', 'director', 'series',
+    const keys = ['state', 'actor', 'director', 'series', 'tag',
                   'prefix', 'exPrefix', 'kw', 'exKw'];
     for (const k of keys) {
       if (String(cond[k] == null ? '' : cond[k]).trim()) n++;
@@ -1448,7 +1483,7 @@
 
     let s = '筛选出 <b>' + kept + '</b> / ' + total;
     if (sorting) s += ' · 已排序';
-    if (noData) s += ' <span class="xf-hint">· 跳过 ' + noData + ' 条缺演员/导演数据</span>';
+    if (noData) s += ' <span class="xf-hint">· 跳过 ' + noData + ' 条缺演员/导演/系列/标签数据</span>';
     box.innerHTML = s;
   }
 
@@ -1464,6 +1499,7 @@
     { k: 'actor',    t: '演员', keys: ['actor'] },
     { k: 'director', t: '导演', keys: ['director'] },
     { k: 'series',   t: '系列', keys: ['series'] },
+    { k: 'tag',      t: '标签', keys: ['tag'] },
     { k: 'prefix',   t: '番号', keys: ['prefix', 'exPrefix'] },
     { k: 'kw',       t: '标题', keys: ['kw', 'exKw'] }
   ];
@@ -1557,6 +1593,7 @@
       case 'actor':    return metaChips('actor', 300);
       case 'director': return metaChips('director', 200);
       case 'series':   return metaChips('series', 200);
+      case 'tag':      return metaChips('tag', 300);
       case 'prefix':   return inHtml('prefix', '含', '数字或字母，如 001') +
                               '<span class="xf-sep"></span>' +
                               inHtml('exPrefix', '排除', 'VR、FC2');
@@ -1573,7 +1610,9 @@
     const cnt = new Map();
     xmem.forEach(function (m) {
       let vals = [];
-      if (field === 'actor') {
+      if (field === 'tag') {
+        if (Array.isArray(m.tags) && m.tags.length) vals = m.tags.slice();
+      } else if (field === 'actor') {
         if (Array.isArray(m.actors) && m.actors.length) vals = m.actors.slice();
         else if (m.names) vals = String(m.names).split(/[\s,，]+/);
       } else {
@@ -1634,8 +1673,8 @@
     if (!XL.dim) { box.hidden = true; box.innerHTML = ''; return; }
     box.hidden = false;
     box.innerHTML = optsHtml(XL.dim);
-    // 演员 / 导演 / 系列选项多：加维度内搜索 + 选项区滚动
-    const meta = (XL.dim === 'actor' || XL.dim === 'director' || XL.dim === 'series');
+    // 演员 / 导演 / 系列 / 标签选项多：加维度内搜索 + 选项区滚动
+    const meta = (XL.dim === 'actor' || XL.dim === 'director' || XL.dim === 'series' || XL.dim === 'tag');
     box.classList.toggle('xf-opts-scroll', meta);
     if (meta) {
       const s = document.createElement('input');
@@ -1705,6 +1744,7 @@
     if (String(cond.actor || '').trim()) items.push({ key: 'actor', label: '演员：' + String(cond.actor).slice(0, 12) });
     if (String(cond.director || '').trim()) items.push({ key: 'director', label: '导演：' + String(cond.director).slice(0, 12) });
     if (String(cond.series || '').trim()) items.push({ key: 'series', label: '系列：' + String(cond.series).slice(0, 12) });
+    if (String(cond.tag || '').trim()) items.push({ key: 'tag', label: '标签：' + String(cond.tag).slice(0, 12) });
     if (String(cond.prefix || '').trim()) items.push({ key: 'prefix', label: '番号含 ' + String(cond.prefix).slice(0, 12) });
     if (String(cond.exPrefix || '').trim()) items.push({ key: 'exPrefix', label: '番号排除 ' + String(cond.exPrefix).slice(0, 12) });
     if (String(cond.kw || '').trim()) items.push({ key: 'kw', label: '标题含 ' + String(cond.kw).slice(0, 12) });
